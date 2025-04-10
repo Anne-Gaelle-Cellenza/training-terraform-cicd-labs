@@ -207,7 +207,7 @@ stages:
 Create a new file in the `pipelines` folder and name it `release.yaml`.  
 Copy the following code in the editor
 
-```yml
+```yaml
 trigger: none
 
 resources:

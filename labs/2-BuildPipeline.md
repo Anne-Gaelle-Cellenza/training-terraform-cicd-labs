@@ -61,7 +61,7 @@ jobs:
 - job: Linter
   displayName: Linter
   pool:
-    vmImage: ubuntu-20.04
+    vmImage: ubuntu-22.04
   steps:
   - checkout: self
   - task: PowerShell@2
@@ -169,7 +169,7 @@ stages:
   - job: Linter
     displayName: Linter
     pool:
-      vmImage: ubuntu-20.04
+      vmImage: ubuntu-22.04
     steps:
     - checkout: self
     - task: PowerShell@2
@@ -182,11 +182,15 @@ stages:
 - stage: terraform_plan
   displayName: Terraform plan on Dev Environment
   dependsOn: Linter
-  jobs :
+  pool:
+    vmImage: ubuntu-22.04
+  jobs:
+        
   - job: terraform_plan_dev
     displayName: Run terraform plan on Dev environment
     variables:
     - group:  dev
+
     steps:
     - checkout: self
 
@@ -243,6 +247,8 @@ trigger:
 stages:
 - stage: terraform_apply
   displayName: Terraform Apply on Dev Environment
+  pool:
+    vmImage: ubuntu-22.04
   jobs :
   - job: terraform_apply_dev
     displayName: Run terraform apply on Dev environment
@@ -311,7 +317,7 @@ jobs:
 - job: Artifact
   displayName: Upload artifact
   pool:
-    vmImage: ubuntu-20.04
+    vmImage: ubuntu-22.04
   steps:
   - checkout: self
   - task: PowerShell@2
@@ -326,6 +332,7 @@ jobs:
       ArtifactName: 'terraform'
       publishLocation: 'Container'
 ```
+
 Commit this file.  
 
 > This pipeline creates an artifact containing both *src* and *configuration* folders.  
