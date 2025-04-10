@@ -9,11 +9,11 @@
     - [Exercise 2: Set approbation](#exercise-2-set-approbation)
     - [Exercise 3: Create Libraries](#exercise-3-create-libraries)
     - [Exercise 4: Create Release Pipeline for dev environment](#exercise-4-create-release-pipeline-for-dev-environment)
-    - [Exercise 4: Create Release Pipeline for uat environment](#exercise-4-create-release-pipeline-for-uat-environment)
+    - [Exercise 5: Trigger the release pipeline](#exercise-5-trigger-the-release-pipeline)
 
 ## Lab overview
 
-In this lab, you will learn how to use release pipeline.
+In this lab, you will learn how to use a release pipeline.
 
 ## Objectives
 
@@ -26,32 +26,38 @@ After you complete this lab, you will be able to:
 
 ### Before you start
 
-- Check your access to the Azure Subscription and Resource Group provided for this training.
-- Check your access to the Azure DevOps Organization and project provided for this training.
-- Project has branch configuration according to the lab *1-Manage Terraform In Azure Repo Git* and backend configuration is done to match your Storage Account.
-
+- Check your access to the **Azure Subscription** and **Resource Group** provided for this training.
+- Check your access to the **Azure DevOps Organization** and **project** provided for this training.
+- The Azure DevOps project gets
+  - branch configuration according to the lab *1-Manage Terraform In Azure Repo Git*,
+  - Azure Resource Manager Service Connections configured as
+    - name = *ARM Service Connection {env}* with env == DEV, UAT and PROD
+    - targetting Azure training subscription
+    - secret set as defined in associated Entra Id Service Principal
+    - SP having Contributor role onto Azure training subscription.
+  
 ### Exercise 1: Create Environments
 
-In this exercise, we will create the 3 environments (in Azure DevOps) to match the 3 configuration we have.  
+In this exercise, we will create two Azure DevOps environments for UAT and PROD.    
 In Azure DevOps portal, go the *Pipelines* blade, and select *Environments*.  
 Click on *Create environment*.
 
 ![create_env](../assets/environment_create.PNG)
 
-Enter the *Name* and *Description* for the environment to create (start with `dev`):
+Enter the *Name* and *Description* for the environment to create (start with `uat`):
 
-- **Name**: dev *(keep it lowercase)*
-- **Description**: Dev environment
+- **Name**: uat *(keep it lowercase)*
+- **Description**: UAT environment
 - Keep the *None* default selection for *Resource*.
 
-Repeat this step for the `uat` and `prod` environments.  
+Repeat this step for the `prod` environment.  
 
 ### Exercise 2: Set approbation
 
 In this exercise we will configure an approval step before deploying to `uat` and `prod` environments.  
-The workflow is:
+The complete workflow will look like:
 - deploy to `dev` without approval,
-- requires a manual approbation for the other two environments.  
+- require a manual approbation for the other two environments (should only be given when the Terraform plan from `dev` is reviewed and validated).  
 
 In Azure DevOps portal, go to *Pipelines* blade, and select *Environments*.  
 Select the `uat` environment.  
@@ -77,23 +83,19 @@ A library can be used to store variables and secrets for an environment.
 > An environment configuration can be spread to multiple libraries.  
 > All of these libraries should follow the environment segregation principle.
 
-In the *Pipelines* blade, Select *Library* and add a variable group:
+We already have a `dev` variable group from *2-Build pipeline* previous lab.  
+We will add two new variable groups for `uat` and `prod`.  
 
-![library_create](../assets/library_create.PNG)
+In the *Pipelines* blade, Select *Library* and ask for a new `uat` variable group.  
+From the *Variables* section, add the following item:
 
-Set the *Variable group name* to `dev`.  
-Under *Variables*, add 3 items:
+- **admin_account_password**: The Admin Account password for the database to be created. Must be Azure compliant (P@ssword01! is fine in case no inspiration...). Click on the locker to set the **admin_account_password** as secret.
 
-- `ARM_ACCESS_KEY`: One of the *tfstate* Storage Account Access keys. Since we will use a Service Principal to authenticate to Azure, this information is required. Get the key from Azure portal.
-- `ARM_SUBSCRIPTION_ID`: The subscription Id where resources must be deployed. Use the training subscription Id. You can get it from the Azure portal.
-- `admin_account_password`: The Admin Account password for the database to be created. Must be Azure compliant (if you're not inspired, P@ssword01! is fine).  
-
-For `ARM_ACCESS_KEY` and `admin_account_password` variables, set them as secret!
+Save your modifications.  
 
 ![library_detail](../assets/library_detail.PNG)
 
-Repeat the same operation for `uat` and `prod` environments.  
-In current lab scope, `ARM_ACCESS_KEY` and `ARM_SUBSCRIPTION_ID` won't change as we always target the same training subscription...
+Repeat the same operation (create variable group and add 1 item) for `prod` environment.  
 
 ### Exercise 4: Create Release Pipeline for dev environment
 
@@ -103,182 +105,143 @@ It will use
 - Data from the dedicated *Library* created in previous step,
 - The dedicated *Environment* created in previous step.
 
-You must first update the three `configuration/*/var.tfvars` file to add your specific data.  
-
-A Service Connection has been created and shared in your Azure DevOps project. It contains the information on the Service Principal.  
-
 Select your *terraform-sample* in Azure DevOps portal.  
-Select the `dev` branch.  
-Create a new file under the *pipelines* folder:
-- New file name: release_dev.yml
+Create a new `feat/release` branch from `dev`.  
+Create a new file under the *pipelines* folder and name it `template_plan.yaml`.
 
 Copy the following code in the editor:
 
 ```yaml
-trigger: none
+parameters:
+- name: stageName
+- name: environment
+- name: dependsOn
+  type: object
+  default: []
 
-pool:
-  vmImage: ubuntu-latest
-
-resources:
- pipelines:
-   - pipeline: build
-     source: build
-
-jobs :
-  - deployment: deploy_dev
-    displayName: Deploy Dev Environment
-    environment: dev
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: Run terraform plan on ${{ parameters.environment }} environment
+  dependsOn: ${{ parameters.dependsOn }}
+  pool:
+    vmImage: ubuntu-22.04
+  jobs :
+  - job: terraform_plan_${{ parameters.environment }}
+    displayName: Run terraform plan on ${{ parameters.environment }} environment
     variables:
-    - group: dev
+    - group:  ${{ parameters.environment }}
+    steps:
+    - download: build
+    - task: AzureCLI@2
+      env:
+        TF_VAR_admin_account_password : $(admin_account_password)
+      displayName: Run terraform plan on ${{ parameters.environment }} environment
+      inputs:
+        azureSubscription: 'ARM Service Connection ${{ upper(parameters.environment) }}'
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        addSpnToEnvironment: true
+        inlineScript: |
+            cd $(PIPELINE.WORKSPACE)/Build/terraform/terraform
+            $env:ARM_CLIENT_ID=$env:servicePrincipalId
+            $env:ARM_CLIENT_SECRET=$env:servicePrincipalKey
+            $env:ARM_TENANT_ID=$env:tenantId
+            terraform init -backend-config='../configuration/${{ parameters.environment }}/backend.hcl'
+            terraform plan -var-file='../configuration/${{ parameters.environment }}/var.tfvars' -input=false
+```
+
+> Have a look to the different sections.  
+> Check the parameters and the syntax for interpolation.  
+> This file is a template that we are going to use for both uat and prod environments.  
+
+Commit this file.  
+
+Create a new file in the `pipelines` folder and name it `template_apply.yaml`.  
+Copy the following code in the editor:
+
+```yaml
+parameters:
+- name: stageName
+- name: environment
+- name: dependsOn
+  type: object
+  default: []
+
+stages:
+- stage: ${{ parameters.stageName }}
+  displayName: Run terraform apply on ${{ parameters.environment }} environment
+  dependsOn: ${{ parameters.dependsOn }}
+  pool:
+    vmImage: ubuntu-22.04
+  jobs :
+  - deployment: terraform_apply_${{ parameters.environment }}
+    displayName: Run terraform apply on ${{ parameters.environment }} environment
+    environment: ${{ parameters.environment }}
+    variables:
+    - group:  ${{ parameters.environment }}
     strategy:
-     runOnce:
-       deploy:
-         steps:
-           - task: AzureCLI@2
-             env:
-               TF_VAR_admin_account_password: $(admin_account_password)
-             displayName: Deploy Dev Environment
-             inputs:
-              azureSubscription: 'Terraform Service Principal'
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+          - task: AzureCLI@2
+            env:
+              TF_VAR_admin_account_password : $(admin_account_password)
+            displayName: Run terraform apply on ${{ parameters.environment }} environment
+            inputs:
+              azureSubscription: 'ARM Service Connection ${{ upper(parameters.environment) }}'
               scriptType: 'pscore'
               scriptLocation: 'inlineScript'
               addSpnToEnvironment: true
               inlineScript: |
-                cd $(PIPELINE.WORKSPACE)/build/terraform/terraform
-                $env:ARM_CLIENT_ID=$env:servicePrincipalId
-                $env:ARM_CLIENT_SECRET=$env:servicePrincipalKey
-                $env:ARM_TENANT_ID=$env:tenantId
-                terraform init -backend-config='../configuration/dev/backend.hcl'
-                terraform apply -var-file='../configuration/dev/var.tfvars' -input=false -auto-approve
+                  cd $(PIPELINE.WORKSPACE)/Build/terraform/terraform
+                  $env:ARM_CLIENT_ID=$env:servicePrincipalId
+                  $env:ARM_CLIENT_SECRET=$env:servicePrincipalKey
+                  $env:ARM_TENANT_ID=$env:tenantId
+                  terraform init -backend-config='../configuration/${{ parameters.environment }}/backend.hcl'
+                  terraform apply -var-file='../configuration/${{ parameters.environment }}/var.tfvars' -input=false -auto-approve
 ```
 
-Set the name of the Service Connection in `azureSubscription` attribute.  
-Commit this file.  
+> This file is a template that we are going to use for both uat and prod environments.  
 
-> Have a look to the different sections.  
-> Check the deployment step.  
-
-Go to the *Pipelines* blade in Azure DevOps and create a new pipeline:
-
-![new_pipeline](../assets/build_new_pipeline.PNG)
-
-For *Where is your source code* step, select **Azure Repo Git**.  
-For *Select a repository* step, select **terraform-sample**.  
-For *Configure your pipeline* step, select **Existing Azure Pipelines YAML file**.  
-For *Select an existing YAML file*
-- select the `dev` branch
-- fill the path: **/pipelines/release_dev.yml**
-
-Click on *Run* to execute the pipeline.  
-In the *Pipelines* blade, check the pipeline run.  
-
-> Pipeline needs permission to access 3 resources before this run can continue...  
-
-Because we didn't grant access permission to all pipelines for the Service Connection, permission is required at first pipeline run.  
-
-![pipeline_perm](../assets/pipeline_permissions.PNG)
-
-At run time, pipelines uses artifact published by latest `build` pipeline (Terraform templates), and uses it to deploy the Azure resources.  
-When pipeline run is done, go to Azure portal and check resources creation in your Resource Group.  
-
-Select the release pipeline in the *Pipelines* blade, and rename it to `release_dev`.
-
-![build_rename](../assets/build_rename.PNG)
-
-### Exercise 4: Create Release Pipeline for uat environment
-
-In the exercise, we will create the Release pipeline for UAT environment.  
-It will use
-- The artefact produced by the build pipeline (latest build from any branch),
-- Data from the dedicated *Library* created in previous step,
-- The dedicated *Environment* created in previous step.
-
-A Service Connection has been created and shared in your project. It contains the information on the Service Principal.  
-
-Select your *terraform-sample* in Azure DevOps portal.  
-Select the `dev` branch.  
-Create a new file under the *pipelines* folder:
-- New file name: release_uat.yml
-
+Create a new file in the `pipelines` folder and name it `release.yaml`.  
 Copy the following code in the editor
 
-```yaml
+```yml
 trigger: none
 
-pool:
-  vmImage: ubuntu-latest
-
 resources:
- pipelines:
-   - pipeline: build
-     source: build
+  pipelines:
+    - pipeline: Build
+      source: Build
 
 stages:
-- stage: plan_uat
-  displayName: Run terraform plan on uat environment
-  jobs :
-    - job: plan_uat
-      displayName: Run terraform plan on uat environment
-      variables:
-      - group:  uat
-      steps:
-      - checkout: self
-      - download: build
-      - task: AzureCLI@2
-        env:
-          TF_VAR_admin_account_password: $(admin_account_password)
-        displayName: Run terraform plan on uat environment
-        inputs:
-          azureSubscription: 'Terraform Service Principal'
-          scriptType: 'pscore'
-          scriptLocation: 'inlineScript'
-          addSpnToEnvironment: true
-          inlineScript: |
-            cd $(PIPELINE.WORKSPACE)/build/terraform/terraform
-            $env:ARM_CLIENT_ID=$env:servicePrincipalId
-            $env:ARM_CLIENT_SECRET=$env:servicePrincipalKey
-            $env:ARM_TENANT_ID=$env:tenantId
-            terraform init -backend-config='../configuration/uat/backend.hcl'
-            terraform plan -var-file='../configuration/uat/var.tfvars' -input=false
-
-- stage: apply_uat
-  displayName: Run terraform plan on uat environment
-  dependsOn: plan_uat
-  jobs :
-    - deployment: deploy_uat
-      displayName: Deploy Uat Environment      
+  - template: template_plan.yaml
+    parameters:
+      stageName: terraform_plan_uat
       environment: uat
-      variables:
-      - group: uat
-      strategy:
-        runOnce:
-          deploy:
-            steps:
-              - task: AzureCLI@2
-                env:
-                  TF_VAR_admin_account_password: $(admin_account_password)
-                displayName: Deploy Uat Environment
-                inputs:
-                  azureSubscription: 'Terraform Service Principal'
-                  scriptType: 'pscore'
-                  scriptLocation: 'inlineScript'
-                  addSpnToEnvironment: true
-                  inlineScript: |
-                    cd $(PIPELINE.WORKSPACE)/build/terraform/terraform
-                    $env:ARM_CLIENT_ID=$env:servicePrincipalId
-                    $env:ARM_CLIENT_SECRET=$env:servicePrincipalKey
-                    $env:ARM_TENANT_ID=$env:tenantId
-                    terraform init -backend-config='../configuration/uat/backend.hcl'
-                    terraform apply -var-file='../configuration/uat/var.tfvars' -input=false -auto-approve
 
+  - template: template_apply.yaml
+    parameters:
+      stageName: terraform_apply_uat
+      environment: uat
+      dependsOn: ["terraform_plan_uat"]
+
+  - template: template_plan.yaml
+    parameters:
+      stageName: terraform_plan_prod
+      environment: prod
+      dependsOn: ["terraform_apply_uat"]
+
+  - template: template_apply.yaml
+    parameters:
+      stageName: terraform_apply_prod
+      environment: prod
+      dependsOn: ["terraform_plan_prod"]
 ```
 
-Set the name of the Service Connection in `azureSubscription` attribute.  
-Commit this file.  
-
-> Have a look to the different sections.  
-> Check the deployment step.  
+> Notice the different sections.
+> This workflow is the *main* one that we are going to use create our pipeline.  
 
 Go to the *Pipelines* blade in Azure DevOps and create a new pipeline:
 
@@ -288,26 +251,46 @@ For *Where is your source code* step, select **Azure Repo Git**.
 For *Select a repository* step, select **terraform-sample**.  
 For *Configure your pipeline* step, select **Existing Azure Pipelines YAML file**.  
 For *Select an existing YAML file*
-- select the `dev` branch
-- fill the path: **/pipelines/release_uat.yml**
+- select the `feat/realase` branch
+- fill the path: **/pipelines/release.yaml**
 
-Click on *Run* to execute the pipeline.  
-In the *Pipelines* blade, check the pipeline run.  
-
-> Pipeline needs permission to access 3 resources before this run can continue...  
-
-Because we didn't grant access permission to all pipelines for the Service Connection, permission is required at first pipeline run.  
-
-![pipeline_perm](../assets/pipeline_permissions.PNG)
-
-> Notice the required approbation step after `terraform plan`!  
-> At this time, you can open the logs, and check the Terraform plan before approving deployment to the environment.  
-
-![pipeline_uat_perm](../assets/uat_permission.PNG)
-
-At run time, pipelines uses artifact published by latest `build` pipeline (Terraform templates), and uses it to deploy the Azure resources.  
-When pipeline run is done, go to Azure portal and check resources creation in your Resource Group.   
-
-Select the release pipeline in the *Pipelines* blade, and rename it to `release_uat`.
+Click on *Save* (do not yet execute the pipeline).  
+Rename that pipeline to `release`.  
 
 ![build_rename](../assets/build_rename.PNG)
+
+Merge the branch `feat/realase` into `dev` and next merge `dev` into `main`.
+
+### Exercise 5: Trigger the release pipeline
+
+In the exercise, we will trigger the release pipeline to deploy the resources in UAT and PROD.    
+The pipeline will use
+- The artefact produced by the build pipeline (latest build from any branch),
+- Data from the dedicated *Library* created in previous steps,
+- The dedicated *Environment* created in previous steps.
+
+A Service Connection has been created and shared in your project for both UAT and PROD. It contains the information on the Service Principal.  
+
+Navigate to your *terraform-sample* repository in Azure DevOps portal.  
+In the pipeline blade, select the `release` pipeline.
+
+![repo_git](../assets/trigger_release_pipelie.PNG)
+
+Click on Run Pipeline.
+
+![repo_git](../assets/release_pipeline_configuration.PNG)
+
+> By selecting  the *Resources* blade, you are able to define the version of the artifact to deploy.  
+> Default is to use the latest generated one.  
+
+Click on *Run*.  
+The pipeline execution starts.  
+Grant the required authorizations to execute the terraform plan on uat environment stage.  
+Once this stage is finished, grant the authorizations for the terraform apply on uat environment stage.  
+
+> Even after the pipeline has been granted the authorizations, the stage will not execute.  
+> It requires an approbation, configured in the Azure DevOps environment.  
+> Approve the deployement.  
+
+At run time, pipeline downloads artifact published by latest `build` pipeline, and uses it to deploy the Azure resources.  
+When pipeline run is done, go to Azure portal and check resources creation in your Resource Group.   
